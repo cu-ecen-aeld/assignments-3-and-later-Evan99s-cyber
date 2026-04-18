@@ -1,4 +1,9 @@
 #include "systemcalls.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -16,7 +21,7 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
+    system(cmd);
     return true;
 }
 
@@ -59,10 +64,61 @@ bool do_exec(int count, ...)
  *
 */
 
+
+ /*   pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork failed");
+        exit(1);
+    }else if (pid == 0) {
+        printf("Executing command: %s\n", command[0]);
+        execv(command[0], command);
+    }else{
+        printf("Parent is waiting for child process to complete...\n");
+        int status;
+        wait(&status);
+        printf("Child process completed with status: %d\n", status);
+    }
     va_end(args);
 
     return true;
 }
+
+*/
+
+pid_t pid = fork();
+
+    if (pid == -1) {
+        // Fork failed
+        perror("fork");
+        return false;
+    } 
+    else if (pid == 0) {
+        // CHILD PROCESS
+        // If this is do_exec_redirect, your dup2 logic goes here
+        
+        execv(command[0], command);
+        
+        // If execv returns, it means it FAILED (e.g., path not found)
+        perror("execv failed");
+        exit(EXIT_FAILURE); 
+    } 
+    else {
+        // PARENT PROCESS
+        int status;
+        // Wait specifically for the child we just spawned
+        if (waitpid(pid, &status, 0) == -1) {
+            return false;
+        }
+
+        // Check if child exited normally AND returned 0 (success)
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            return true;
+        } else {
+            // This is where the 'echo' test will now correctly return false
+            return false;
+        }
+    }
+  }
 
 /**
 * @param outputfile - The full path to the file to write with command output.
@@ -92,7 +148,27 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork failed in do_exec_redirect");
+        exit(1);
+    }else if (pid == 0) {
+        printf("Executing command: %s in do_exec_redirect\n", command[0]);
+        int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd == -1) {
+            perror("Failed to open output file");
+            exit(1);
+        }
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
 
+        execv(command[0], command);
+    }else{
+        printf("Parent do_exec_redirect is waiting for child process to complete...\n");
+        int status;
+        wait(&status);
+        printf("Child process from do_exec_redirect completed with status: %d\n", status);
+    }
     va_end(args);
 
     return true;
