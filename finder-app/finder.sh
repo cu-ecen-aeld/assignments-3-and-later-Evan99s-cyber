@@ -1,3 +1,5 @@
+#!/bin/sh
+
 if [$# -ne 2]; then
 	echo "Error: L1"
 	exit 1

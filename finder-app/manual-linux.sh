@@ -1,10 +1,11 @@
 #!/bin/bash
 # Script outline to install and build kernel.
-# Author: Siddhant Jajoo.
+# Author: Siddhant Jajoo (Modified by Evan)
 
 set -e
 set -u
 
+# 1. Environment and Variable Setup
 OUTDIR=/tmp/aeld
 KERNEL_REPO=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
 KERNEL_VERSION=v5.15.163
@@ -15,66 +16,106 @@ CROSS_COMPILE=aarch64-none-linux-gnu-
 
 if [ $# -lt 1 ]
 then
-	echo "Using default directory ${OUTDIR} for output"
+    echo "Using default directory ${OUTDIR} for output"
 else
-	OUTDIR=$1
-	echo "Using passed directory ${OUTDIR} for output"
+    OUTDIR=$1
+    echo "Using passed directory ${OUTDIR} for output"
 fi
 
-mkdir -p ${OUTDIR}
+# Define ROOTFS early to avoid "unbound variable" errors
+ROOTFS=${OUTDIR}/rootfs
 
+mkdir -p "${OUTDIR}"
+
+# 2. Kernel Build Phase
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
-    #Clone only if the repository does not exist.
-	echo "CLONING GIT LINUX STABLE VERSION ${KERNEL_VERSION} IN ${OUTDIR}"
-	git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION}
+    echo "CLONING GIT LINUX STABLE VERSION ${KERNEL_VERSION} IN ${OUTDIR}"
+    git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION}
 fi
-if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
+
+if [ ! -e "${OUTDIR}/Image" ]; then
     cd linux-stable
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
 
-    # TODO: Add your kernel build steps here
+    # Kernel build steps
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} -j$(nproc) Image dtbs
+    cp "arch/${ARCH}/boot/Image" "${OUTDIR}/Image"
 fi
 
 echo "Adding the Image in outdir"
 
+# 3. Root Filesystem Staging
 echo "Creating the staging directory for the root filesystem"
 cd "$OUTDIR"
-if [ -d "${OUTDIR}/rootfs" ]
+if [ -d "${ROOTFS}" ]
 then
-	echo "Deleting rootfs directory at ${OUTDIR}/rootfs and starting over"
-    sudo rm  -rf ${OUTDIR}/rootfs
+    echo "Deleting rootfs directory at ${ROOTFS} and starting over"
+    sudo rm -rf "${ROOTFS}"
 fi
 
-# TODO: Create necessary base directories
+mkdir -p "${ROOTFS}"
+cd "${ROOTFS}"
+mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
+mkdir -p usr/bin usr/lib usr/sbin
+mkdir -p var/log
+mkdir -p home/conf
 
+# 4. BusyBox Installation
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]
 then
-git clone git://busybox.net/busybox.git
+    git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
-    # TODO:  Configure busybox
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} distclean
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
 else
     cd busybox
 fi
 
-# TODO: Make and install busybox
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} -j$(nproc)
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CONFIG_PREFIX="${ROOTFS}" install
 
+# 5. Library Dependencies
 echo "Library dependencies"
+cd "${ROOTFS}"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
-# TODO: Add library dependencies to rootfs
+SYSROOT=$(${CROSS_COMPILE}gcc --print-sysroot)
+cp -L "${SYSROOT}/lib/ld-linux-aarch64.so.1" "${ROOTFS}/lib/"
+cp -L "${SYSROOT}/lib64/libc.so.6" "${ROOTFS}/lib64/"
+cp -L "${SYSROOT}/lib64/libm.so.6" "${ROOTFS}/lib64/"
+cp -L "${SYSROOT}/lib64/libresolv.so.2" "${ROOTFS}/lib64/"
 
-# TODO: Make device nodes
+# 6. Device Nodes (Handled safely to avoid "File exists" errors)
+sudo mknod -m 666 "${ROOTFS}/dev/null" c 1 3
+sudo mknod -m 600 "${ROOTFS}/dev/console" c 5 1
 
-# TODO: Clean and build the writer utility
+# 7. Application Integration
+cd "${FINDER_APP_DIR}"
+make clean
+make CROSS_COMPILE=${CROSS_COMPILE}
 
-# TODO: Copy the finder related scripts and executables to the /home directory
-# on the target rootfs
+# Copying finder related scripts and executables to /home
+cp writer "${ROOTFS}/home/"
+cp finder.sh "${ROOTFS}/home/"
+cp finder-test.sh "${ROOTFS}/home/"
+cp autorun-qemu.sh "${ROOTFS}/home/"
+cp -r conf/ "${ROOTFS}/home/"
 
-# TODO: Chown the root directory
+# Ensure scripts are executable for the target
+chmod +x "${ROOTFS}/home/finder.sh"
+chmod +x "${ROOTFS}/home/finder-test.sh"
 
-# TODO: Create initramfs.cpio.gz
+# 8. Final Packaging
+sudo chown -R root:root "${ROOTFS}"
+cd "${ROOTFS}"
+find . | cpio -H newc -ov --owner root:root > "${OUTDIR}/initramfs.cpio"
+gzip -f "${OUTDIR}/initramfs.cpio"
+
+echo "Build Complete. Files are in ${OUTDIR}"
